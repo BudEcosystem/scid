@@ -20,12 +20,29 @@ type JobConfig struct {
 	SlackColor string   `toml:"slack_color" validate:"hexcolor"`
 }
 
+type TagModel string
+
+const (
+	// get static tag, tag name in Tag.Value
+	TagModelStatic TagModel = "static"
+	// get latest tag with matching regex, regex in Tag.Value
+	TagModelRegex TagModel = "regex"
+)
+
+type Tag struct {
+	Model TagModel `toml:"model" validate:"required"`
+	Value string   `toml:"value" validate:"required"`
+}
+
 type SCIDonfig struct {
-	Branch         string               `toml:"branch" validate:"required"`
-	RepoUrl        string               `toml:"repo_url" validate:"required"`
-	DryRun         bool                 `toml:"dry_run"`
+	Branch  string `toml:"branch" validate:"required"`
+	RepoUrl string `toml:"repo_url" validate:"required"`
+	Tag     *Tag   `toml:"tag" validate:"dive"`
+
+	DryRun bool         `toml:"dry_run"`
+	Slack  *SlackConfig `toml:"slack" validate:"dive"`
+
 	HelmChartsPath string               `toml:"helm_charts_path"`
-	Slack          *SlackConfig         `toml:"slack"`
 	Jobs           map[string]JobConfig `toml:"jobs" validate:"dive"`
 }
 
