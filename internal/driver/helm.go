@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"sinanmohd.com/scid/internal/config"
 	"sinanmohd.com/scid/internal/git"
 	"sinanmohd.com/scid/internal/slack"
 
@@ -15,7 +16,7 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-const SCID_HELM_CONFIG_NAME = "scid.toml"
+const SCID_HELM_CONFIG_NAME = "scid"
 
 type SCIDToml struct {
 	ReleaseName       string   `toml:"release_name" validate:"required"`
@@ -25,11 +26,11 @@ type SCIDToml struct {
 	SopsValuePaths    []string `toml:"sops_value_paths"`
 }
 
-func HelmChartUpstallIfChaged(gitChartPath string, bg *git.Git) error {
+func HelmChartUpstallIfChaged(chartPath, scidTomlPath string, bg *git.Git) error {
 	var scidToml SCIDToml
 	// TODO: potential path traversal vulnerability i dont want to
 	// waste time on it. just mention it, if requirements change in the future
-	_, err := toml.DecodeFile(filepath.Join(gitChartPath, SCID_HELM_CONFIG_NAME), &scidToml)
+	_, err := toml.DecodeFile(scidTomlPath, &scidToml)
 	if err != nil {
 		return err
 	}
@@ -47,12 +48,12 @@ func HelmChartUpstallIfChaged(gitChartPath string, bg *git.Git) error {
 	}
 
 	for _, path := range scidToml.ValuePaths {
-		fullPath := filepath.Join(gitChartPath, path)
+		fullPath := filepath.Join(chartPath, path)
 		execLine = append(execLine, "--values", fullPath)
 	}
 
 	for _, encPath := range scidToml.SopsValuePaths {
-		fullEncPath := filepath.Join(gitChartPath, encPath)
+		fullEncPath := filepath.Join(chartPath, encPath)
 		plainContent, err := decrypt.File(fullEncPath, "yaml")
 		if err != nil {
 			return err
@@ -78,13 +79,13 @@ func HelmChartUpstallIfChaged(gitChartPath string, bg *git.Git) error {
 
 	var finalChartPath string
 	if scidToml.ChartPathOverride == "" {
-		finalChartPath = gitChartPath
+		finalChartPath = chartPath
 	} else {
-		finalChartPath = filepath.Join(gitChartPath, scidToml.ChartPathOverride)
+		finalChartPath = filepath.Join(chartPath, scidToml.ChartPathOverride)
 	}
 	execLine = append(execLine, scidToml.ReleaseName, finalChartPath)
 	changeWatchPaths := []string{
-		gitChartPath,
+		chartPath,
 	}
 
 	output, changedPath, execErr, err := ExecIfChaged(changeWatchPaths, execLine, bg)
@@ -94,7 +95,7 @@ func HelmChartUpstallIfChaged(gitChartPath string, bg *git.Git) error {
 		return nil
 	}
 
-	title := fmt.Sprintf("Helm Chart %s", filepath.Base(gitChartPath))
+	title := fmt.Sprintf("Helm Chart %s", filepath.Base(chartPath))
 	if execErr != nil {
 		extraText := fmt.Sprintf("watch path %s changed\n%s: %s", changedPath, execErr.Error(), output)
 		err = slack.SendMesg(bg, "#10148c", title, false, extraText)
@@ -106,22 +107,28 @@ func HelmChartUpstallIfChaged(gitChartPath string, bg *git.Git) error {
 	return nil
 }
 
-func HelmChartUpstallIfChagedWrapped(gitChartPath string, bg *git.Git, wg *sync.WaitGroup) {
+func HelmChartUpstallIfChagedWrapped(chartPath, scidTomlPath string, bg *git.Git, wg *sync.WaitGroup) {
 	wg.Add(1)
 	go func() {
-		err := HelmChartUpstallIfChaged(gitChartPath, bg)
+		err := HelmChartUpstallIfChaged(chartPath, scidTomlPath, bg)
 		if err != nil {
-			log.Error().Err(err).Msgf("Upstalling Helm Chart %s", filepath.Base(gitChartPath))
+			log.Error().Err(err).Msgf("Upstalling Helm Chart %s", filepath.Base(chartPath))
 		}
 
 		wg.Done()
 	}()
 }
 
-func HelmChartsUpstallIfChaged(gitChartsPath string, bg *git.Git) error {
-	entries, err := os.ReadDir(gitChartsPath)
+func HelmChartsUpstallIfChaged(helm *config.Helm, bg *git.Git) error {
+	entries, err := os.ReadDir(helm.ChartsPath)
 	if err != nil {
 		return err
+	}
+	var configName string
+	if helm.Env == "" {
+		configName = fmt.Sprintf("%s.toml", SCID_HELM_CONFIG_NAME)
+	} else {
+		configName = fmt.Sprintf("%s.%s.toml", SCID_HELM_CONFIG_NAME, helm.Env)
 	}
 
 	var helmWg sync.WaitGroup
@@ -130,7 +137,8 @@ func HelmChartsUpstallIfChaged(gitChartsPath string, bg *git.Git) error {
 			continue
 		}
 
-		scidTomlPath := filepath.Join(gitChartsPath, entry.Name(), SCID_HELM_CONFIG_NAME)
+		chartPath := filepath.Join(helm.ChartsPath, entry.Name())
+		scidTomlPath := filepath.Join(chartPath, configName)
 		_, err := os.Stat(scidTomlPath)
 		if os.IsNotExist(err) {
 			continue
@@ -138,7 +146,7 @@ func HelmChartsUpstallIfChaged(gitChartsPath string, bg *git.Git) error {
 			return err
 		}
 
-		HelmChartUpstallIfChagedWrapped(filepath.Join(gitChartsPath, entry.Name()), bg, &helmWg)
+		HelmChartUpstallIfChagedWrapped(chartPath, scidTomlPath, bg, &helmWg)
 	}
 	helmWg.Wait()
 

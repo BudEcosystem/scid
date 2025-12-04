@@ -17,8 +17,8 @@ func scid(g *git.Git) {
 
 	wg.Add(1)
 	go func() {
-		if config.Config.HelmChartsPath != "" {
-			driver.HelmChartsUpstallIfChaged(config.Config.HelmChartsPath, g)
+		if config.Config.Helm != nil {
+			driver.HelmChartsUpstallIfChaged(config.Config.Helm, g)
 		}
 		wg.Done()
 	}()
